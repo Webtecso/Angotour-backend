@@ -1,3 +1,4 @@
+import { CreateVehicleInspectionDto } from '../vehicle-inspections/dto/create-vehicle-inspection.dto';
 ﻿import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import type { Response } from 'express';
@@ -232,6 +233,54 @@ export class AdminOpsController {
     return result;
   }
 
+  @Get('analytics/health')
+  @Roles('operations')
+  analyticsHealth() {
+    return this.ops.analyticsHealth();
+  }
+
+  @Get('analytics/demand')
+  @Roles('operations')
+  analyticsDemand() {
+    return this.ops.analyticsDemand();
+  }
+
+  @Get('analytics/categories')
+  @Roles('operations')
+  analyticsCategories() {
+    return this.ops.analyticsCategories();
+  }
+
+  @Get('analytics/fraud')
+  @Roles('operations', 'safety')
+  analyticsFraud() {
+    return this.ops.analyticsFraud();
+  }
+
+  @Get('vehicle-inspections')
+  @Roles('operations')
+  vehicleInspections(@Query('vehicleId') vehicleId?: string) {
+    return this.ops.vehicleInspections(vehicleId);
+  }
+
+  @Post('vehicle-inspections')
+  @Roles('operations')
+  async createVehicleInspection(@Req() req: any, @Body() body: CreateVehicleInspectionDto) {
+    const inspection = await this.ops.createVehicleInspection(body);
+    await this.audit.record({
+      adminId: req.user.adminId, adminEmail: req.user.email, action: 'vehicle_inspected',
+      targetType: 'vehicle', targetId: body.vehicleId,
+      details: { status: inspection.status, inspector: inspection.inspectorName },
+    });
+    return inspection;
+  }
+
+  @Get('certification/overview')
+  @Roles('operations')
+  certificationOverview() {
+    return this.ops.certificationOverview();
+  }
+
   @Get('trips')
   @Roles('operations', 'support')
   trips(@Query('status') status?: string) {
@@ -282,6 +331,8 @@ export class AdminOpsController {
     return result;
   }
 }
+
+
 
 
 

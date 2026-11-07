@@ -1,4 +1,4 @@
-import { ExtrasModule } from './modules/extras/extras.module';
+﻿import { ExtrasModule } from './modules/extras/extras.module';
 import { ProfileModule } from './modules/profile/profile.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { SupportModule } from './modules/support/support.module';
@@ -15,6 +15,9 @@ import { VehiclesModule } from './modules/vehicles/vehicles.module';
 import { DriverAuthModule } from './modules/driver-auth/driver-auth.module';
 import { AdminAuthModule } from './modules/admin-auth/admin-auth.module';
 import { AdminOpsModule } from './modules/admin-ops/admin-ops.module';
+import { CommissionPlansModule } from './modules/commission-plans/commission-plans.module';
+import { DriverSafetyModule } from './modules/driver-safety/driver-safety.module';
+import { VehicleInspectionsModule } from './modules/vehicle-inspections/vehicle-inspections.module';
 import { PricingModule } from './modules/pricing/pricing.module';
 import { AdminPeopleModule } from './modules/admin-people/admin-people.module';
 import { PartnersModule } from './modules/partners/partners.module';
@@ -22,6 +25,7 @@ import { AdminFinanceModule } from './modules/admin-finance/admin-finance.module
 import { DriverWalletModule } from './modules/driver-wallet/driver-wallet.module';
 import { DriverVehicleModule } from './modules/driver-vehicle/driver-vehicle.module';
 import { DriverDocumentsModule } from './modules/driver-documents/driver-documents.module';
+import { MonthlyModule } from './modules/monthly/monthly.module';
 
 @Module({
   imports: [
@@ -40,6 +44,9 @@ import { DriverDocumentsModule } from './modules/driver-documents/driver-documen
     DriverAuthModule,
     AdminAuthModule,
     AdminOpsModule,
+    CommissionPlansModule,
+    DriverSafetyModule,
+    VehicleInspectionsModule,
     PricingModule,
     AdminPeopleModule,
     PartnersModule,
@@ -47,6 +54,9 @@ import { DriverDocumentsModule } from './modules/driver-documents/driver-documen
     DriverWalletModule,
     DriverVehicleModule,
     DriverDocumentsModule,
+    MonthlyModule,
   ],
 })
 export class AppModule {}
+
+

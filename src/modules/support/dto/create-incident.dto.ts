@@ -1,8 +1,8 @@
 ﻿import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class CreateIncidentDto {
-  @IsIn(['incident', 'lost_item'])
-  kind: 'incident' | 'lost_item';
+  @IsIn(['incident', 'lost_item', 'sos'])
+  kind: 'incident' | 'lost_item' | 'sos';
 
   @IsString()
   @MaxLength(80)
@@ -18,3 +18,4 @@ export class CreateIncidentDto {
   @MaxLength(60)
   tripRef?: string;
 }
+

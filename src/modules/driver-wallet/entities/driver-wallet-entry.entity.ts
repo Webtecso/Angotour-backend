@@ -1,6 +1,6 @@
-﻿import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 
-export type DriverWalletKind = 'topup' | 'commission';
+export type DriverWalletKind = 'topup' | 'commission' | 'zone_incentive';
 export type DriverWalletStatus = 'processing' | 'confirmed' | 'failed' | 'reserved' | 'settled' | 'released';
 
 /**

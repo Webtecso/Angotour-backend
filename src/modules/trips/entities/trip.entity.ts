@@ -1,4 +1,4 @@
-﻿import { Column, CreateDateColumn, Entity, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, CreateDateColumn, Entity, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 import { Driver } from '../../drivers/entities/driver.entity';
 import { VehicleCategoryId } from '../../../common/vehicle-category.enum';
@@ -95,6 +95,10 @@ export class Trip {
 
   @Column({ type: 'boolean', default: false })
   womenMode: boolean;
+
+  // Incentivo de zona periferica, calculado na criacao a partir do destino.
+  @Column({ type: 'int', default: 0 })
+  zoneIncentiveKz: number;
 
   @Column({ type: 'int', nullable: true })
   changeKz?: number;

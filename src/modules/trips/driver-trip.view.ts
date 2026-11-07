@@ -1,4 +1,4 @@
-﻿import { TripPoint, TripStatus } from './entities/trip.entity';
+import { TripPoint, TripStatus } from './entities/trip.entity';
 
 /** O que o motorista pode ver de uma viagem. O codigo de embarque nunca vem aqui. */
 export interface DriverTripView {
@@ -12,6 +12,7 @@ export interface DriverTripView {
   distanceToPassengerKm: number | null;
   priceKz: number;
   commissionKz: number;
+  zoneIncentiveKz: number;
   netEarningsKz: number;
   paymentMethodType: string;
   boardingConfirmed: boolean;

@@ -163,9 +163,11 @@ export class AdminOpsService {
     const status = filters.status && INCIDENT_STATUSES.includes(filters.status) ? filters.status : null;
     return this.db.query(
       `SELECT i.id, i."caseNumber", i.kind, i.category, i.description, i."tripRef", i.status, i."createdAt",
-              u."fullName" AS "userFullName", u.phone AS "userPhone"
+              i."reporterType", i.severity, i."liveLocationLat", i."liveLocationLng",
+              COALESCE(u."fullName", dr."fullName") AS "userFullName", COALESCE(u.phone, dr.phone) AS "userPhone"
        FROM incidents i
-       LEFT JOIN users u ON u.id = i."userId"
+       LEFT JOIN users u ON u.id = i."userId" AND i."reporterType" = 'passenger'
+       LEFT JOIN drivers dr ON dr.id = i."userId" AND i."reporterType" = 'driver'
        WHERE ($1::text IS NULL OR i.kind = $1)
          AND ($2::text IS NULL OR i.status = $2)
        ORDER BY i."createdAt" DESC LIMIT 300`,
@@ -557,11 +559,173 @@ export class AdminOpsService {
     return { ok: true };
   }
 
+  async analyticsHealth() {
+    const pendingDocs = await this.scalar(`SELECT COUNT(*) FROM driver_documents WHERE status = 'pending'`);
+    const pendingVehicles = await this.scalar(`SELECT COUNT(*) FROM vehicles WHERE status = 'pending'`);
+    const stuckSearching = await this.scalar(
+      `SELECT COUNT(*) FROM trips WHERE status = 'searching_driver' AND "createdAt" < now() - interval '10 minutes'`,
+    );
+    const onlineDrivers = await this.db.query(`SELECT id FROM drivers WHERE status = 'online'`);
+    let belowMinBalance = 0;
+    for (const d of onlineDrivers) {
+      const b = await this.wallet.balances(d.id);
+      if (b.availableKz < 2000) belowMinBalance++;
+    }
+    return {
+      pendingDocs: Number(pendingDocs ?? 0),
+      pendingVehicles: Number(pendingVehicles ?? 0),
+      stuckSearching: Number(stuckSearching ?? 0),
+      belowMinBalance,
+      onlineDrivers: onlineDrivers.length,
+    };
+  }
+
+  async analyticsDemand() {
+    const hourRows = await this.db.query(
+      `SELECT EXTRACT(HOUR FROM "createdAt")::int AS hour,
+              COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+              COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled
+         FROM trips
+        WHERE "createdAt" >= now() - interval '30 days'
+        GROUP BY 1 ORDER BY 1`,
+    );
+    const hours = Array.from({ length: 24 }, (_, h) => {
+      const r = hourRows.find((x: any) => Number(x.hour) === h);
+      return { hour: h, completed: Number(r?.completed ?? 0), cancelled: Number(r?.cancelled ?? 0) };
+    });
+
+    const dayRows = await this.db.query(
+      `SELECT date_trunc('day', "createdAt")::date AS day,
+              COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+              COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled
+         FROM trips
+        WHERE "createdAt" >= now() - interval '14 days'
+        GROUP BY 1 ORDER BY 1`,
+    );
+    const days = dayRows.map((r: any) => ({
+      day: r.day,
+      completed: Number(r.completed),
+      cancelled: Number(r.cancelled),
+    }));
+
+    return { hours, days };
+  }
+
+  async analyticsCategories() {
+    const rows = await this.db.query(
+      `SELECT v."categoryId" AS "categoryId",
+              COUNT(*) FILTER (WHERE t.status = 'completed') AS completed,
+              COUNT(*) FILTER (WHERE t.status = 'cancelled') AS cancelled,
+              COUNT(*) AS total,
+              COALESCE(SUM(t."priceKz") FILTER (WHERE t.status = 'completed'), 0) AS "revenueKz",
+              COALESCE(AVG(t."priceKz") FILTER (WHERE t.status = 'completed'), 0) AS "avgPriceKz"
+         FROM trips t
+         JOIN vehicles v ON v."driverId" = t."driverId"
+        WHERE t."createdAt" >= now() - interval '30 days'
+        GROUP BY v."categoryId"
+        ORDER BY "revenueKz" DESC`,
+    );
+    return rows.map((r: any) => {
+      const total = Number(r.total);
+      const cancelled = Number(r.cancelled);
+      return {
+        categoryId: r.categoryId,
+        completed: Number(r.completed),
+        cancelled,
+        total,
+        revenueKz: Number(r.revenueKz),
+        avgPriceKz: Math.round(Number(r.avgPriceKz)),
+        cancellationRate: total > 0 ? Math.round((cancelled / total) * 1000) / 10 : 0,
+      };
+    });
+  }
+
+  async analyticsFraud() {
+    const riskyPassengers = await this.db.query(
+      `SELECT u.id, u."fullName", u.phone, COUNT(*) AS "cancelCount"
+         FROM trips t
+         JOIN users u ON u.id = t."passengerId"
+        WHERE t.status = 'cancelled' AND t."createdAt" >= now() - interval '7 days'
+        GROUP BY u.id, u."fullName", u.phone
+       HAVING COUNT(*) >= 5
+        ORDER BY "cancelCount" DESC
+        LIMIT 50`,
+    );
+
+    const onlineDrivers = await this.db.query(`SELECT id, "fullName", phone FROM drivers WHERE status = 'online'`);
+    const belowMinDrivers: any[] = [];
+    for (const d of onlineDrivers) {
+      const b = await this.wallet.balances(d.id);
+      if (b.availableKz < 2000) {
+        belowMinDrivers.push({ id: d.id, fullName: d.fullName, phone: d.phone, availableKz: b.availableKz });
+      }
+    }
+
+    return {
+      riskyPassengers: riskyPassengers.map((r: any) => ({
+        id: r.id,
+        fullName: r.fullName,
+        phone: r.phone,
+        cancelCount: Number(r.cancelCount),
+      })),
+      belowMinDrivers,
+    };
+  }
+
+  async vehicleInspections(vehicleId?: string) {
+    return this.db.query(
+      `SELECT vi.*, v.plate, v.model
+         FROM vehicle_inspections vi
+         JOIN vehicles v ON v.id = vi."vehicleId"
+        WHERE ($1::uuid IS NULL OR vi."vehicleId" = $1)
+        ORDER BY vi."createdAt" DESC LIMIT 300`,
+      [vehicleId ?? null],
+    );
+  }
+
+  async createVehicleInspection(dto: {
+    vehicleId: string; inspectorName: string; tiresOk: boolean; brakesOk: boolean;
+    lightsOk: boolean; acOk: boolean; documentationOk: boolean; notes?: string; nextDueDate?: string;
+  }) {
+    const allOk = dto.tiresOk && dto.brakesOk && dto.lightsOk && dto.acOk && dto.documentationOk;
+    const status = allOk ? 'certified' : 'failed';
+    const rows = await this.db.query(
+      `INSERT INTO vehicle_inspections
+         ("vehicleId", "inspectorName", "tiresOk", "brakesOk", "lightsOk", "acOk", "documentationOk", status, notes, "nextDueDate")
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING *`,
+      [dto.vehicleId, dto.inspectorName, dto.tiresOk, dto.brakesOk, dto.lightsOk, dto.acOk, dto.documentationOk, status, dto.notes ?? null, dto.nextDueDate ?? null],
+    );
+    return rows[0];
+  }
+
+  async certificationOverview() {
+    const rows = await this.db.query(
+      `SELECT DISTINCT ON (vi."vehicleId") vi."vehicleId", vi.status, vi."nextDueDate", v.plate, v.model
+         FROM vehicle_inspections vi
+         JOIN vehicles v ON v.id = vi."vehicleId"
+        ORDER BY vi."vehicleId", vi."createdAt" DESC`,
+    );
+    const now = new Date();
+    let certified = 0, expired = 0, failed = 0;
+    for (const r of rows) {
+      const due = r.nextDueDate ? new Date(r.nextDueDate) : null;
+      if (r.status === 'failed') failed++;
+      else if (due && due < now) expired++;
+      else certified++;
+    }
+    const totalVehicles = await this.scalar(`SELECT COUNT(*) FROM vehicles`);
+    const neverInspected = Math.max(0, Number(totalVehicles ?? 0) - rows.length);
+    return { certified, expired, failed, neverInspected, inspected: rows.length };
+  }
+
   trips(status?: string) {
     const s = status && TRIP_STATUSES.includes(status) ? status : null;
     return this.db.query(TRIP_SELECT + ` WHERE ($1::text IS NULL OR t.status::text = $1) ORDER BY t."createdAt" DESC LIMIT 200`, [s]);
   }
 }
+
+
 
 
 

@@ -41,6 +41,10 @@ export class Driver {
   @Column({ default: false })
   isVerified: boolean;
 
+  // Plano de comissao: economy (taxa base) | pro (8%) | subscription (0%)
+  @Column({ type: 'varchar', length: 20, default: 'economy' })
+  commissionPlan: string;
+
   // Modo Ela: permite priorizar motorista mulher no matching
   @Column({ type: 'varchar', length: 10, default: 'male' })
   gender: string;

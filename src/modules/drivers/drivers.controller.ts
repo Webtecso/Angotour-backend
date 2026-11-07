@@ -7,6 +7,7 @@ import { DriverStatus } from './entities/driver.entity';
 import { DriverWalletService } from '../driver-wallet/driver-wallet.service';
 import { DriverDocumentsService } from '../driver-documents/driver-documents.service';
 import { assertVehicleApproved } from '../../common/vehicle-approval';
+import { assertVehicleCertified } from '../../common/vehicle-certification';
 
 @Controller('drivers')
 export class DriversController {
@@ -33,6 +34,7 @@ export class DriversController {
     if (status === DriverStatus.ONLINE) {
       await this.driverDocs.assertAllApproved(req.user.driverId);
       await assertVehicleApproved(this.db, req.user.driverId);
+      await assertVehicleCertified(this.db, req.user.driverId);
       await this.driverWallet.assertCanGoOnline(req.user.driverId);
     }
     return this.driversService.setStatus(req.user.driverId, status);

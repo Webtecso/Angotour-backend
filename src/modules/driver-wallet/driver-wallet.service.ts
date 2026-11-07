@@ -1,10 +1,13 @@
-﻿import { ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DriverWalletEntry } from './entities/driver-wallet-entry.entity';
 
 /** Saldo minimo para receber corridas (documento de produto, seccao 9). */
 export const MIN_OPERATING_BALANCE_KZ = 2000;
+
+/** Custo de combustivel de referencia por km, usado so no simulador de rendimento (nao afeta pagamentos). */
+export const FUEL_COST_PER_KM_KZ = 120;
 
 @Injectable()
 export class DriverWalletService {
@@ -21,7 +24,7 @@ export class DriverWalletService {
     const sum = (kind: string, status: string) =>
       Number(rows.find((r) => r.kind === kind && r.status === status)?.total ?? 0);
 
-    const balanceKz = sum('topup', 'confirmed') - sum('commission', 'settled');
+    const balanceKz = sum('topup', 'confirmed') + sum('zone_incentive', 'settled') - sum('commission', 'settled');
     const reservedKz = sum('commission', 'reserved');
     return { balanceKz, reservedKz, availableKz: balanceKz - reservedKz };
   }
@@ -78,6 +81,14 @@ export class DriverWalletService {
     }
   }
 
+  /** Incentivo de zona periferica: pago na hora, ao concluir a viagem. Idempotente. */
+  async payZoneIncentive(driverId: string, tripId: string, amountKz: number): Promise<void> {
+    if (amountKz <= 0) return;
+    const existing = await this.entries.findOne({ where: { driverId, tripId, kind: 'zone_incentive' } });
+    if (existing) return;
+    await this.entries.save(this.entries.create({ driverId, tripId, kind: 'zone_incentive', amountKz, status: 'settled', settledAt: new Date() }));
+  }
+
   async startTopUp(driverId: string, amountKz: number): Promise<DriverWalletEntry> {
     const reference = `9${Math.floor(10000000 + Math.random() * 89999999)}`;
     return this.entries.save(this.entries.create({ driverId, kind: 'topup', amountKz, status: 'processing', reference }));
@@ -98,19 +109,27 @@ export class DriverWalletService {
 
     let todayGrossKz = 0;
     let todayTrips = 0;
+    let todayDistanceKm = 0;
     let commissionsTodayKz = 0;
+    let zoneIncentivesTodayKz = 0;
     try {
       const trips = await this.entries.query(
-        `SELECT COALESCE(SUM("priceKz"),0) AS gross, COUNT(*) AS n FROM trips WHERE "driverId" = $1 AND status = 'completed' AND "completedAt" >= date_trunc('day', now())`,
+        `SELECT COALESCE(SUM("priceKz"),0) AS gross, COALESCE(SUM("distanceKm"),0) AS km, COUNT(*) AS n FROM trips WHERE "driverId" = $1 AND status = 'completed' AND "completedAt" >= date_trunc('day', now())`,
         [driverId],
       );
       todayGrossKz = Number(trips[0]?.gross ?? 0);
+      todayDistanceKm = Number(trips[0]?.km ?? 0);
       todayTrips = Number(trips[0]?.n ?? 0);
       const comm = await this.entries.query(
         `SELECT COALESCE(SUM("amountKz"),0) AS total FROM driver_wallet_entries WHERE "driverId" = $1 AND kind = 'commission' AND status = 'settled' AND "settledAt" >= date_trunc('day', now())`,
         [driverId],
       );
       commissionsTodayKz = Number(comm[0]?.total ?? 0);
+      const incentive = await this.entries.query(
+        `SELECT COALESCE(SUM("amountKz"),0) AS total FROM driver_wallet_entries WHERE "driverId" = $1 AND kind = 'zone_incentive' AND status = 'settled' AND "settledAt" >= date_trunc('day', now())`,
+        [driverId],
+      );
+      zoneIncentivesTodayKz = Number(incentive[0]?.total ?? 0);
     } catch {
       // estatisticas do dia nunca devem partir a carteira
     }
@@ -121,7 +140,11 @@ export class DriverWalletService {
       todayGrossKz,
       todayTrips,
       commissionsTodayKz,
-      todayNetKz: todayGrossKz - commissionsTodayKz,
+      todayDistanceKm,
+      zoneIncentivesTodayKz,
+      todayNetKz: todayGrossKz - commissionsTodayKz + zoneIncentivesTodayKz,
+      estimatedFuelCostKz: Math.round(todayDistanceKm * FUEL_COST_PER_KM_KZ),
+      todayNetAfterFuelKz: todayGrossKz - commissionsTodayKz + zoneIncentivesTodayKz - Math.round(todayDistanceKm * FUEL_COST_PER_KM_KZ),
       entries: list.map((e) => ({
         id: e.id,
         kind: e.kind,

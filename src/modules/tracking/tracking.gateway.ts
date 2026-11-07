@@ -1,4 +1,4 @@
-﻿import {
+import {
   ConnectedSocket,
   MessageBody,
   OnGatewayConnection,
@@ -30,6 +30,7 @@ export interface TripAssignedPayload {
   tripDurationMinutes: number;
   estimatedEarningsKz: number;
   estimatedCommissionKz: number;
+  zoneIncentiveKz: number;
   paymentMethod: string;
   passengerCoordinates: { latitude: number; longitude: number };
   destinationCoordinates: { latitude: number; longitude: number };

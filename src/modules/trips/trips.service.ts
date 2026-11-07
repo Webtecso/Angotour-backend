@@ -1,15 +1,17 @@
-﻿import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Trip, TripStatus } from './entities/trip.entity';
 import { Driver, DriverStatus } from '../drivers/entities/driver.entity';
 import { CATEGORY_PRICING, calculatePriceBreakdown, calculateTripPrice } from '../../common/vehicle-categories';
 import { haversineDistanceKm } from '../../common/geo.util';
+import { findZone, zoneIncentiveForPoint } from '../../common/zones';
 import { EstimateTripDto } from './dto/estimate-trip.dto';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { VehicleCategoryId } from '../vehicles/entities/vehicle.entity';
 import { vehicleApproved } from '../../common/vehicle-approval';
 import { getCommissionRate } from '../../common/platform-config';
+import { commissionKzFor } from '../../common/commission-plans';
 import { TrackingGateway, TripAssignedPayload } from '../tracking/tracking.gateway';
 import { DriverTripView } from './driver-trip.view';
 import { DriverWalletService } from '../driver-wallet/driver-wallet.service';
@@ -101,6 +103,7 @@ export class TripsService implements OnModuleInit {
       splitCount: dto.splitCount && dto.splitCount > 1 ? dto.splitCount : undefined,
       airportPickup: dto.airportPickup,
       womenMode: dto.womenMode ?? false,
+      zoneIncentiveKz: zoneIncentiveForPoint(dto.destination.latitude, dto.destination.longitude),
     });
 
     return this.tripsRepository.save(trip);
@@ -230,15 +233,16 @@ export class TripsService implements OnModuleInit {
     return {
       tripId: trip.id,
       originLabel: trip.origin.label || trip.origin.address,
-      destinationLabel: trip.destination.label || trip.destination.address,
+      destinationLabel: findZone(trip.destination.latitude, trip.destination.longitude).name,
       distanceToPassengerKm,
       tripDistanceKm: trip.distanceKm,
       tripDurationMinutes: Math.max(1, Math.round((trip.distanceKm / 25) * 60)),
       estimatedEarningsKz: trip.priceKz,
       estimatedCommissionKz: this.driverCommissionKz(trip.priceKz),
+      zoneIncentiveKz: trip.zoneIncentiveKz ?? 0,
       paymentMethod: trip.paymentMethodType,
       passengerCoordinates: { latitude: trip.origin.latitude, longitude: trip.origin.longitude },
-      destinationCoordinates: { latitude: trip.destination.latitude, longitude: trip.destination.longitude },
+      destinationCoordinates: (() => { const z = findZone(trip.destination.latitude, trip.destination.longitude); return { latitude: z.centerLat, longitude: z.centerLng }; })(),
     };
   }
 
@@ -280,7 +284,10 @@ export class TripsService implements OnModuleInit {
     trip.status = TripStatus.COMPLETED;
     trip.completedAt = new Date();
     await this.awardPoints(userId, trip.priceKz);
-    if (trip.driver) await this.driverWallet.settleCommission(trip.driver.id, trip.id, this.driverCommissionKz(trip.priceKz));
+    if (trip.driver) {
+      await this.driverWallet.settleCommission(trip.driver.id, trip.id, await this.commissionFor(trip.driver.id, trip.priceKz));
+      await this.driverWallet.payZoneIncentive(trip.driver.id, trip.id, trip.zoneIncentiveKz ?? 0);
+    }
     if (typeof actualDistanceKm === 'number') trip.actualDistanceKm = Number(actualDistanceKm.toFixed(2));
     const saved = await this.tripsRepository.save(trip);
     await this.releaseDriver(trip);
@@ -302,6 +309,12 @@ export class TripsService implements OnModuleInit {
     return Math.round((priceKz * getCommissionRate()) / 50) * 50;
   }
 
+﻿  /** Comissao desta corrida segundo o plano do motorista (economy | pro | subscription). */
+  private async commissionFor(driverId: string, priceKz: number): Promise<number> {
+    const rows = await this.tripsRepository.query(`SELECT "commissionPlan" FROM drivers WHERE id = $1`, [driverId]);
+    return commissionKzFor(priceKz, rows[0]?.commissionPlan);
+  }
+
   private toDriverView(trip: Trip, distanceToPassengerKm: number | null): DriverTripView {
     const commissionKz = this.driverCommissionKz(trip.priceKz);
     return {
@@ -309,13 +322,16 @@ export class TripsService implements OnModuleInit {
       status: trip.status,
       passengerName: trip.passenger?.fullName ?? 'Passageiro',
       origin: trip.origin,
-      destination: trip.destination,
+      destination: trip.status === TripStatus.DRIVER_ASSIGNED
+        ? (() => { const z = findZone(trip.destination.latitude, trip.destination.longitude); return { label: z.name, address: z.name, latitude: z.centerLat, longitude: z.centerLng }; })()
+        : trip.destination,
       distanceKm: trip.distanceKm,
       durationMinutes: Math.max(1, Math.round((trip.distanceKm / 25) * 60)),
       distanceToPassengerKm,
       priceKz: trip.priceKz,
       commissionKz,
-      netEarningsKz: trip.priceKz - commissionKz,
+      zoneIncentiveKz: trip.zoneIncentiveKz ?? 0,
+      netEarningsKz: trip.priceKz - commissionKz + (trip.zoneIncentiveKz ?? 0),
       paymentMethodType: trip.paymentMethodType,
       boardingConfirmed: !!trip.boardingConfirmedAt,
     };
@@ -355,7 +371,7 @@ export class TripsService implements OnModuleInit {
     if (trip.status !== TripStatus.DRIVER_ASSIGNED) {
       throw new BadRequestException('Esta viagem ja nao esta disponivel para aceitar.');
     }
-    await this.driverWallet.reserveCommission(driverId, trip.id, this.driverCommissionKz(trip.priceKz));
+    await this.driverWallet.reserveCommission(driverId, trip.id, await this.commissionFor(driverId, trip.priceKz));
     trip.status = TripStatus.DRIVER_ARRIVING;
     const saved = await this.tripsRepository.save(trip);
     this.tracking.broadcastTripStatus({ tripId: saved.id, status: saved.status });
@@ -436,11 +452,30 @@ export class TripsService implements OnModuleInit {
       throw new BadRequestException('Codigo de embarque incorreto.');
     }
     this.boardingAttempts.delete(trip.id);
+    await this.assertDriverNearPickup(trip, driverId);
     trip.boardingConfirmedAt = new Date();
     await this.tripsRepository.save(trip);
     return { ok: true };
   }
 
+  // Trava de proximidade: o motorista tem de estar perto do ponto de recolha para confirmar o embarque.
+  // O GPS em Luanda tem desvios grandes, por isso o raio e generoso (BOARDING_MAX_DISTANCE_M, 300 m por omissao).
+  // So bloqueia com ENFORCE_BOARDING_PROXIMITY=true; sem isso apenas regista o aviso na consola.
+  private async assertDriverNearPickup(trip: Trip, driverId: string): Promise<void> {
+    const rows = await this.tripsRepository.manager.query(
+      `SELECT ST_Distance("currentLocation", ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) AS m FROM drivers WHERE id = $3 AND "currentLocation" IS NOT NULL`,
+      [trip.origin.longitude, trip.origin.latitude, driverId],
+    );
+    if (!rows[0]) return; // sem posicao conhecida: nao bloqueia (o GPS pode falhar)
+    const meters = Number(rows[0].m);
+    const maxMeters = Number(process.env.BOARDING_MAX_DISTANCE_M ?? 300);
+    if (!Number.isFinite(meters) || meters <= maxMeters) return;
+    if (process.env.ENFORCE_BOARDING_PROXIMITY === 'true') {
+      throw new BadRequestException('Ainda estas longe do ponto de recolha. Aproxima-te do passageiro para confirmar o embarque.');
+    }
+    // eslint-disable-next-line no-console
+    console.warn('[Boarding] motorista a ' + Math.round(meters) + ' m do ponto de recolha (maximo ' + maxMeters + ' m).');
+  }
   async driverStart(tripId: string, driverId: string): Promise<{ ok: boolean; status: TripStatus }> {
     const trip = await this.driverOwnedTripOrFail(tripId, driverId);
     if (trip.status === TripStatus.IN_PROGRESS) return { ok: true, status: trip.status };
@@ -459,7 +494,7 @@ export class TripsService implements OnModuleInit {
 
   async driverComplete(tripId: string, driverId: string): Promise<{ ok: boolean; netEarningsKz: number }> {
     const trip = await this.driverOwnedTripOrFail(tripId, driverId);
-    const netEarningsKz = trip.priceKz - this.driverCommissionKz(trip.priceKz);
+    const netEarningsKz = trip.priceKz - (await this.commissionFor(driverId, trip.priceKz)) + (trip.zoneIncentiveKz ?? 0);
     if (trip.status === TripStatus.COMPLETED) return { ok: true, netEarningsKz };
     if (trip.status !== TripStatus.IN_PROGRESS) {
       throw new BadRequestException('So podes concluir uma viagem em curso.');
@@ -469,7 +504,8 @@ export class TripsService implements OnModuleInit {
     const saved = await this.tripsRepository.save(trip);
     if (trip.passenger?.id) await this.awardPoints(trip.passenger.id, trip.priceKz);
     await this.releaseDriver(trip);
-    await this.driverWallet.settleCommission(driverId, trip.id, this.driverCommissionKz(trip.priceKz));
+    await this.driverWallet.settleCommission(driverId, trip.id, await this.commissionFor(driverId, trip.priceKz));
+    await this.driverWallet.payZoneIncentive(driverId, trip.id, trip.zoneIncentiveKz ?? 0);
     this.declinedDrivers.delete(trip.id);
     this.boardingAttempts.delete(trip.id);
     this.tracking.broadcastTripStatus({ tripId: saved.id, status: saved.status });

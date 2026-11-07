@@ -30,6 +30,27 @@ export class Incident {
   @Column({ type: 'varchar', length: 30, default: 'recebido' })
   status: string;
 
+  // normal | elevado | critico (SOS gera sempre 'critico')
+  @Column({ type: 'varchar', length: 10, default: 'normal' })
+  severity: string;
+
+  @Column({ default: false })
+  isLiveShare: boolean;
+
+  // Quem reportou: passenger (omissao) | driver. Para driver, userId guarda o id do motorista.
+  @Column({ type: 'varchar', length: 10, default: 'passenger' })
+  reporterType: string;
+
+  @Column({ type: 'float', nullable: true })
+  liveLocationLat?: number;
+
+  @Column({ type: 'float', nullable: true })
+  liveLocationLng?: number;
+
+  @Column({ type: 'timestamp', nullable: true })
+  resolvedAt?: Date;
+
   @CreateDateColumn()
   createdAt: Date;
 }
+

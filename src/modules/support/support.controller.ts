@@ -23,4 +23,15 @@ export class SupportController {
   findOne(@Req() req: any, @Param('caseNumber') caseNumber: string) {
     return this.supportService.findOneMine(req.user.userId, caseNumber);
   }
+
+  @Post('incidents/:caseNumber/location')
+  updateLocation(@Req() req: any, @Param('caseNumber') caseNumber: string, @Body() body: { latitude: number; longitude: number }) {
+    return this.supportService.updateLiveLocation(req.user.userId, caseNumber, body.latitude, body.longitude);
+  }
+
+  @Post('incidents/:caseNumber/resolve')
+  resolve(@Req() req: any, @Param('caseNumber') caseNumber: string) {
+    return this.supportService.resolve(req.user.userId, caseNumber);
+  }
 }
+
