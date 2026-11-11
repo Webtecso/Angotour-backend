@@ -8,6 +8,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { NotificationsService } from '../notifications/notifications.service';
 
 interface DriverLocationPayload {
   tripId: string;
@@ -36,6 +37,12 @@ export interface TripAssignedPayload {
   destinationCoordinates: { latitude: number; longitude: number };
 }
 
+const STATUS_PUSH: Record<string, { title: string; body: string }> = {
+  driver_arriving: { title: 'O motorista aceitou!', body: 'O teu motorista esta a caminho.' },
+  in_progress: { title: 'Viagem iniciada', body: 'A tua viagem com a AngoTour comecou.' },
+  completed: { title: 'Viagem concluida', body: 'Obrigado por viajar com a AngoTour Mobilidade!' },
+};
+
 /**
  * Gateway de tracking em tempo real.
  *
@@ -45,17 +52,15 @@ export interface TripAssignedPayload {
  * Sala por motorista (`driver:<id>`): o motorista entra nesta sala ao ficar
  * online, e e por ela que recebe o aviso de uma nova viagem atribuida.
  *
- * Fluxo:
- *   App passageiro  -> emit 'join_trip'        -> entra na sala trip:<id>
- *   App motorista    -> emit 'join_driver_room'  -> entra na sala driver:<id>
- *   App motorista    -> emit 'driver_location'   -> backend faz broadcast na sala da viagem
- *   Backend (trips)   -> emit 'trip_status'      -> quando o estado da viagem muda
- *   Backend (trips)   -> emit 'trip_assigned'     -> quando uma viagem e atribuida a este motorista
+ * Alem do socket (so chega com a app aberta), cada evento relevante tambem
+ * dispara um push Expo - e o que acorda a app com o telemovel bloqueado.
  */
 @WebSocketGateway({ cors: { origin: '*' } })
 export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
+
+  constructor(private readonly notifications: NotificationsService) {}
 
   handleConnection(client: Socket) {
     // eslint-disable-next-line no-console
@@ -95,10 +100,19 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
   /** Chamado pelo TripsService quando o estado de uma viagem muda. */
   broadcastTripStatus(payload: TripStatusPayload) {
     this.server.to(`trip:${payload.tripId}`).emit('trip_status_update', payload);
+    const push = STATUS_PUSH[payload.status];
+    if (push) {
+      this.notifications
+        .sendToTripPassenger(payload.tripId, push.title, push.body, { type: 'trip_status', tripId: payload.tripId, status: payload.status })
+        .catch(() => {});
+    }
   }
 
   /** Chamado pelo TripsService quando uma viagem e atribuida a um motorista. */
   notifyDriverAssigned(driverId: string, payload: TripAssignedPayload) {
     this.server.to(`driver:${driverId}`).emit('trip_assigned', payload);
+    this.notifications
+      .sendToDriver(driverId, 'Nova corrida!', `${payload.originLabel} -> ${payload.destinationLabel}`, { type: 'trip_assigned', tripId: payload.tripId })
+      .catch(() => {});
   }
 }

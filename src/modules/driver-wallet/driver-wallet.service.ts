@@ -89,9 +89,9 @@ export class DriverWalletService {
     await this.entries.save(this.entries.create({ driverId, tripId, kind: 'zone_incentive', amountKz, status: 'settled', settledAt: new Date() }));
   }
 
-  async startTopUp(driverId: string, amountKz: number): Promise<DriverWalletEntry> {
+  async startTopUp(driverId: string, amountKz: number, method?: string): Promise<DriverWalletEntry> {
     const reference = `9${Math.floor(10000000 + Math.random() * 89999999)}`;
-    return this.entries.save(this.entries.create({ driverId, kind: 'topup', amountKz, status: 'processing', reference }));
+    return this.entries.save(this.entries.create({ driverId, kind: 'topup', amountKz, status: 'processing', reference, method: method ?? null }));
   }
 
   /** SO DESENVOLVIMENTO: exige ALLOW_DEV_TOPUP_CONFIRM=true. Em producao vem de um webhook assinado. */

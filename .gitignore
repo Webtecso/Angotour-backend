@@ -4,3 +4,10 @@ dist/
 *.log
 
 uploads/
+.env.*
+*.bak
+*.bak[0-9]*
+tmp-*.sql
+audit-next.txt
+*.tsbuildinfo
+.expo/

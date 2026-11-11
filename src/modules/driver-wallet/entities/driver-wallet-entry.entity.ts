@@ -34,6 +34,10 @@ export class DriverWalletEntry {
   @Column({ type: 'varchar', length: 20, nullable: true })
   reference?: string | null;
 
+  // Metodo do deposito: multicaixa_express | unitel_money (so topup).
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  method?: string | null;
+
   @Column({ type: 'timestamptz', nullable: true })
   settledAt?: Date | null;
 

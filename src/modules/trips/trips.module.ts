@@ -1,4 +1,4 @@
-﻿import { Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Trip } from './entities/trip.entity';
 import { TripsService } from './trips.service';
@@ -7,9 +7,10 @@ import { DriverTripsController } from './driver-trips.controller';
 import { TrackingModule } from '../tracking/tracking.module';
 import { DriverWalletModule } from '../driver-wallet/driver-wallet.module';
 import { DriverDocumentsModule } from '../driver-documents/driver-documents.module';
+import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Trip]), TrackingModule, DriverWalletModule, DriverDocumentsModule],
+  imports: [TypeOrmModule.forFeature([Trip]), TrackingModule, DriverWalletModule, DriverDocumentsModule, WalletModule],
   controllers: [TripsController, DriverTripsController],
   providers: [TripsService],
   exports: [TripsService],

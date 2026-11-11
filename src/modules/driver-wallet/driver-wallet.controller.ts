@@ -16,7 +16,7 @@ export class DriverWalletController {
 
   @Post('topups')
   startTopUp(@Req() req: any, @Body() dto: CreateDriverTopUpDto) {
-    return this.wallet.startTopUp(req.user.driverId, dto.amountKz);
+    return this.wallet.startTopUp(req.user.driverId, dto.amountKz, dto.method);
   }
 
   @Post('topups/:id/confirm')

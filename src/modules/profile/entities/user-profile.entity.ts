@@ -1,4 +1,4 @@
-﻿import { Column, Entity, PrimaryColumn } from 'typeorm';
+import { Column, Entity, PrimaryColumn } from 'typeorm';
 
 @Entity('user_profiles')
 export class UserProfile {
@@ -16,7 +16,10 @@ export class UserProfile {
   @Column({ type: 'int', default: 0 })
   angoPoints: number;
 
+  // Token push Expo (ExponentPushToken[...]) deste passageiro; null se nunca registou.
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  pushToken?: string;
+
   @Column({ type: 'timestamptz', nullable: true })
   verifiedAt?: Date;
 }
-

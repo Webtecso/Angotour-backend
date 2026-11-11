@@ -41,6 +41,10 @@ export class Driver {
   @Column({ default: false })
   isVerified: boolean;
 
+  // Token push Expo deste motorista; null se nunca registou.
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  pushToken?: string;
+
   // Plano de comissao: economy (taxa base) | pro (8%) | subscription (0%)
   @Column({ type: 'varchar', length: 20, default: 'economy' })
   commissionPlan: string;

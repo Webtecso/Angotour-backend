@@ -1,4 +1,4 @@
-﻿import { IsEmail, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsDateString, IsEmail, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
 import { PreferredLanguage } from '../entities/user.entity';
 
 export class UpdateUserDto {
@@ -10,6 +10,10 @@ export class UpdateUserDto {
   @IsOptional()
   @IsEmail()
   email?: string;
+
+  @IsOptional()
+  @IsDateString()
+  birthDate?: string;
 
   @IsOptional()
   @IsString()

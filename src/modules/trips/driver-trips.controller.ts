@@ -1,4 +1,4 @@
-﻿import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+﻿import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { TripsService } from './trips.service';
 
@@ -11,6 +11,21 @@ export class DriverTripsController {
   @Get('active')
   active(@Req() req: any) {
     return this.tripsService.driverActiveTrip(req.user.driverId);
+  }
+
+  @Get('scheduled')
+  scheduled(@Req() req: any) {
+    return this.tripsService.driverScheduled(req.user.driverId);
+  }
+
+  @Post(':id/reserve')
+  reserve(@Req() req: any, @Param('id') id: string) {
+    return this.tripsService.driverReserve(id, req.user.driverId);
+  }
+
+  @Delete(':id/reserve')
+  unreserve(@Req() req: any, @Param('id') id: string) {
+    return this.tripsService.driverUnreserve(id, req.user.driverId);
   }
 
   @Patch(':id/accept')

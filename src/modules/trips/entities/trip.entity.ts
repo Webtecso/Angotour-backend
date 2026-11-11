@@ -105,7 +105,8 @@ export class Trip {
 
   @CreateDateColumn()
   createdAt: Date;
+
+  // Campo transitorio (nao persistido): calculado em tempo real a partir do
+  // saldo da carteira do passageiro quando o metodo de pagamento e "wallet".
+  paymentConfirmed?: boolean;
 }
-
-
-

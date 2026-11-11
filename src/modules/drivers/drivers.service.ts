@@ -1,4 +1,4 @@
-﻿import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Driver, DriverStatus } from './entities/driver.entity';
@@ -24,6 +24,10 @@ export class DriversService {
     await this.driversRepository.update(driverId, { currentLocation: toGeoPoint(coords) });
   }
 
+  async setPushToken(driverId: string, pushToken: string): Promise<void> {
+    await this.driversRepository.update(driverId, { pushToken });
+  }
+
   async setStatus(driverId: string, status: DriverStatus): Promise<Driver> {
     const driver = await this.driversRepository.findOne({ where: { id: driverId } });
     if (!driver) throw new NotFoundException('Motorista nao encontrado.');
@@ -31,13 +35,6 @@ export class DriversService {
     return this.driversRepository.save(driver);
   }
 
-  /**
-   * Encontra motoristas online dentro de um raio (em km), ordenados por
-   * distancia. Usa PostGIS ST_DWithin (indexavel, rapido) + ST_Distance.
-   *
-   * Requer indice espacial para bom desempenho em producao:
-   *   CREATE INDEX idx_drivers_location ON drivers USING GIST (current_location);
-   */
   async findNearby(coords: Coordinates, radiusKm = 5): Promise<Array<Driver & { distanceKm: number }>> {
     const radiusMeters = radiusKm * 1000;
 

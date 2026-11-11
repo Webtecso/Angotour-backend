@@ -8,6 +8,8 @@ import { Roles } from '../admin-auth/roles.decorator';
 import { RolesGuard } from '../admin-auth/roles.guard';
 import { DriverDocumentsService } from '../driver-documents/driver-documents.service';
 import { RejectDocumentDto } from '../driver-documents/dto/reject-document.dto';
+import { IdentityDocumentsService } from '../identity-documents/identity-documents.service';
+import { RejectIdentityDocumentDto } from '../identity-documents/dto/reject-identity-document.dto';
 
 /** Rotas do painel. Login de admin (admin-jwt) + papel (RolesGuard). O super_admin passa sempre. */
 @Controller('admin')
@@ -16,6 +18,7 @@ export class AdminOpsController {
   constructor(
     private readonly ops: AdminOpsService,
     private readonly docs: DriverDocumentsService,
+    private readonly identity: IdentityDocumentsService,
     private readonly audit: AdminAuditService,
   ) {}
 
@@ -327,6 +330,51 @@ export class AdminOpsController {
     await this.audit.record({
       adminId: req.user.adminId, adminEmail: req.user.email, action: 'document_rejected',
       targetType: 'driver_document', targetId: id, details: { driverId: info.driverId, type: info.type, reason: dto.reason },
+    });
+    return result;
+  }
+
+  // ---------- Verificacao de identidade do passageiro ----------
+
+  @Get('identity-documents')
+  @Roles('operations', 'support')
+  identityDocuments(@Query('status') status?: string) {
+    return this.identity.listForReview(status);
+  }
+
+  @Get('identity-documents/:id/file')
+  @Roles('operations', 'support')
+  async identityFile(@Req() req: any, @Param('id', ParseUUIDPipe) id: string, @Res() res: Response) {
+    const { filePath, mimeType } = await this.identity.getFile(id);
+    const info = await this.identity.info(id);
+    await this.audit.record({
+      adminId: req.user.adminId, adminEmail: req.user.email, action: 'identity_document_viewed',
+      targetType: 'user_document', targetId: id, details: { userId: info.userId, type: info.type },
+    });
+    res.type(mimeType);
+    res.sendFile(filePath);
+  }
+
+  @Patch('identity-documents/:id/approve')
+  @Roles('operations', 'support')
+  async approveIdentityDocument(@Req() req: any, @Param('id', ParseUUIDPipe) id: string) {
+    const info = await this.identity.info(id);
+    const result = await this.identity.approve(id);
+    await this.audit.record({
+      adminId: req.user.adminId, adminEmail: req.user.email, action: 'identity_document_approved',
+      targetType: 'user_document', targetId: id, details: { userId: info.userId, type: info.type, allApproved: result.allApproved },
+    });
+    return result;
+  }
+
+  @Patch('identity-documents/:id/reject')
+  @Roles('operations', 'support')
+  async rejectIdentityDocument(@Req() req: any, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RejectIdentityDocumentDto) {
+    const info = await this.identity.info(id);
+    const result = await this.identity.reject(id, dto.reason);
+    await this.audit.record({
+      adminId: req.user.adminId, adminEmail: req.user.email, action: 'identity_document_rejected',
+      targetType: 'user_document', targetId: id, details: { userId: info.userId, type: info.type, reason: dto.reason },
     });
     return result;
   }

@@ -1,4 +1,4 @@
-﻿import { Injectable } from '@nestjs/common';
+﻿import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UserProfile } from './entities/user-profile.entity';
@@ -28,6 +28,14 @@ export class ProfileService {
    * quando esse fluxo (ainda por construir) chamar approveVerification().
    */
   async verifyIdentity(userId: string): Promise<UserProfile> {
+    // So se submete para revisao com os 3 documentos enviados (BI frente e verso, selfie).
+    const docs: Array<{ ok: number }> = await this.profiles.query(
+      'SELECT COUNT(*) FILTER (WHERE status <> \'rejected\')::int AS ok FROM user_documents WHERE "userId" = $1',
+      [userId],
+    );
+    if (Number(docs[0]?.ok ?? 0) < 3) {
+      throw new BadRequestException('Envia o BI (frente e verso) e a selfie antes de submeter a verificacao.');
+    }
     const profile = await this.getOrCreate(userId);
     if (profile.verificationStatus !== 'verified') {
       profile.verificationStatus = 'pending';
@@ -42,5 +50,9 @@ export class ProfileService {
     profile.verifiedAt = new Date();
     return this.profiles.save(profile);
   }
-}
 
+  async setPushToken(userId: string, pushToken: string): Promise<void> {
+    await this.getOrCreate(userId);
+    await this.profiles.update(userId, { pushToken });
+  }
+}

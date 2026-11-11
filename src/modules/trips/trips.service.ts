@@ -16,6 +16,7 @@ import { TrackingGateway, TripAssignedPayload } from '../tracking/tracking.gatew
 import { DriverTripView } from './driver-trip.view';
 import { DriverWalletService } from '../driver-wallet/driver-wallet.service';
 import { DriverDocumentsService } from '../driver-documents/driver-documents.service';
+import { WalletService } from '../wallet/wallet.service';
 
 export interface CategoryEstimate {
   categoryId: VehicleCategoryId;
@@ -43,7 +44,10 @@ export class TripsService implements OnModuleInit {
     private readonly tracking: TrackingGateway,
     private readonly driverWallet: DriverWalletService,
     private readonly driverDocs: DriverDocumentsService,
-  ) {}
+    private readonly passengerWallet: WalletService,
+  ) {
+    this.startReservationSweeper();
+  }
 
   /** Em desenvolvimento garante motoristas demo online logo ao arrancar (para o mapa mostrar carros reais). */
   async onModuleInit(): Promise<void> {
@@ -118,7 +122,22 @@ export class TripsService implements OnModuleInit {
   async findOwnedOrFail(id: string, userId: string): Promise<Trip> {
     const trip = await this.findByIdOrFail(id);
     if (trip.passenger?.id !== userId) throw new ForbiddenException('Esta viagem nao te pertence.');
+    trip.paymentConfirmed = await this.paymentConfirmedFor(trip);
     return trip;
+  }
+
+  /**
+   * Pagamento por carteira e debitado automaticamente: o saldo (wallet do
+   * passageiro) ja desconta viagens concluidas pagas por wallet. Se o saldo
+   * ficar negativo, a viagem fica concluida mas NAO fica confirmada como
+   * paga por carteira (paymentConfirmed=false).
+   */
+  private async paymentConfirmedFor(trip: Trip): Promise<boolean> {
+    if (trip.status !== TripStatus.COMPLETED) return false;
+    if (trip.paymentMethodType !== 'wallet') return true;
+    if (!trip.passenger?.id) return true;
+    const { balanceKz } = await this.passengerWallet.summary(trip.passenger.id);
+    return balanceKz >= 0;
   }
 
   findAllForPassenger(passengerId: string): Promise<Trip[]> {
@@ -162,6 +181,11 @@ export class TripsService implements OnModuleInit {
     if (trip.status !== TripStatus.SEARCHING_DRIVER) {
       throw new BadRequestException('Esta viagem ja tem motorista ou ja terminou.');
     }
+    // Reserva: so se procura motorista perto da hora marcada (janela de 20 min).
+    const SCHEDULE_ASSIGN_WINDOW_MS = 20 * 60 * 1000;
+    if (trip.scheduledFor && new Date(trip.scheduledFor).getTime() - Date.now() > SCHEDULE_ASSIGN_WINDOW_MS) {
+      throw new BadRequestException('Esta viagem esta agendada. O motorista e atribuido perto da hora marcada.');
+    }
 
     await this.ensureDemoDrivers();
 
@@ -177,12 +201,13 @@ export class TripsService implements OnModuleInit {
       .setParameters({ lat: latitude, lng: longitude, status: DriverStatus.ONLINE })
       .getRawAndEntities();
 
+    const penalized = await this.penalizedDriverIds();
     const allCandidates = rows.entities
       .map((driver, i) => ({ driver, distanceKm: Number(rows.raw[i].dist) / 1000 }))
-      .filter((c) => c.distanceKm <= MAX_MATCH_RADIUS_KM)
+      .filter((c) => c.distanceKm <= MAX_MATCH_RADIUS_KM && !this.declinedDrivers.get(trip.id)?.has(c.driver.id))
       .sort((a, b) => {
         const score = (c: { driver: Driver }) =>
-          (c.driver.id === preferDriverId ? 2 : 0) + (preferPhones?.includes(c.driver.phone) ? 1 : 0) + ((preferFemale ?? trip.womenMode) && c.driver.gender === 'female' ? 4 : 0);
+          (penalized.has(c.driver.id) ? -3 : 0) + (c.driver.id === preferDriverId ? 2 : 0) + (preferPhones?.includes(c.driver.phone) ? 1 : 0) + ((preferFemale ?? trip.womenMode) && c.driver.gender === 'female' ? 4 : 0);
         return score(b) - score(a) || a.distanceKm - b.distanceKm;
       });
 
@@ -219,7 +244,10 @@ export class TripsService implements OnModuleInit {
     const demoPhones = DEMO_DRIVERS.map((d) => d.phone);
     const result: T[] = [];
     for (const item of list) {
-      const isDemo = process.env.NODE_ENV !== 'production' && demoPhones.includes(item.driver.phone);
+      const isDemoDriver = demoPhones.includes(item.driver.phone);
+      // Motoristas demo so entram se forem pedidos de forma explicita (ALLOW_DEMO_DRIVERS=true), nunca por omissao.
+      const isDemo = isDemoDriver && process.env.NODE_ENV !== 'production' && process.env.ALLOW_DEMO_DRIVERS === 'true';
+      if (isDemoDriver && !isDemo) continue;
       if (isDemo) { result.push(item); continue; }
       if (!(await this.driverDocs.areAllApproved(item.driver.id))) continue;
       if (!(await vehicleApproved(this.tripsRepository.manager, item.driver.id))) continue;
@@ -258,6 +286,221 @@ export class TripsService implements OnModuleInit {
     } catch {
       // ignorar: pontos nunca podem impedir a conclusao da viagem
     }
+  }
+
+  // ---------- Reservas: activacao a hora, falta do motorista e penalizacao ----------
+  // Desligado por defeito: so corre com RESERVATIONS_AUTO=true no .env, depois de a app do passageiro
+  // conseguir abrir a viagem quando a reserva ganha motorista.
+  private reservationTimer: ReturnType<typeof setInterval> | null = null;
+  private sweeping = false;
+
+  private startReservationSweeper(): void {
+    if (this.reservationTimer) return;
+    const m = this.tripsRepository.manager;
+    m.query(
+      `CREATE TABLE IF NOT EXISTS driver_penalties (
+         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+         "driverId" uuid NOT NULL,
+         "tripId" uuid,
+         reason varchar(40) NOT NULL,
+         "createdAt" timestamptz NOT NULL DEFAULT now(),
+         "expiresAt" timestamptz NOT NULL
+       )`,
+    )
+      .then(() => m.query(`CREATE INDEX IF NOT EXISTS driver_penalties_active_idx ON driver_penalties ("driverId", "expiresAt")`))
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.warn('[Reservas] tabela de penalizacoes:', (e as Error).message);
+      });
+    if (process.env.RESERVATIONS_AUTO !== 'true') return;
+    const timer: any = setInterval(() => { void this.sweepReservations(); }, 60000);
+    timer.unref?.();
+    this.reservationTimer = timer;
+    // eslint-disable-next-line no-console
+    console.log('[Reservas] activacao automatica ligada (verifica a cada 60 s).');
+  }
+
+  /** Motoristas com penalizacao activa: descem na ordenacao, mas nao sao bloqueados. */
+  private async penalizedDriverIds(): Promise<Set<string>> {
+    try {
+      const rows: Array<{ driverId: string }> = await this.tripsRepository.manager.query(
+        `SELECT DISTINCT "driverId" FROM driver_penalties WHERE "expiresAt" > now()`,
+      );
+      return new Set(rows.map((r) => r.driverId));
+    } catch {
+      return new Set<string>();
+    }
+  }
+
+  private async sweepReservations(): Promise<void> {
+    if (this.sweeping) return;
+    this.sweeping = true;
+    const ACTIVATE_MIN = 15; // procura motorista a partir de 15 min antes da hora
+    const GRACE_MIN = 10; // tolerancia depois da hora marcada
+    const PENALTY_DAYS = 7; // duracao da penalizacao
+    try {
+      const m = this.tripsRepository.manager;
+
+      // 1) Faltas: motorista atribuido que nao confirmou o embarque ate GRACE_MIN depois da hora.
+      const late: Array<{ id: string; driverId: string }> = await m.query(
+        `SELECT id, "driverId" FROM trips
+         WHERE "scheduledFor" IS NOT NULL
+           AND "driverId" IS NOT NULL
+           AND status::text IN ('driver_assigned','driver_arriving')
+           AND "boardingConfirmedAt" IS NULL
+           AND "scheduledFor" + make_interval(mins => $1::int) < now()
+           AND "scheduledFor" > now() - interval '12 hours'`,
+        [GRACE_MIN],
+      );
+      for (const t of late) {
+        await m.query(
+          `INSERT INTO driver_penalties ("driverId", "tripId", reason, "expiresAt")
+           VALUES ($1, $2, 'reservation_no_show', now() + make_interval(days => $3::int))`,
+          [t.driverId, t.id, PENALTY_DAYS],
+        );
+        try { await this.driverWallet.releaseCommission(t.driverId, t.id); } catch { /* sem reserva de comissao */ }
+        const declined = this.declinedDrivers.get(t.id) ?? new Set<string>();
+        declined.add(t.driverId);
+        this.declinedDrivers.set(t.id, declined);
+        this.boardingAttempts.delete(t.id);
+        await m.query(
+          `UPDATE trips SET "driverId" = NULL, status = 'searching_driver', "boardingConfirmedAt" = NULL WHERE id = $1`,
+          [t.id],
+        );
+        await m.query(`UPDATE drivers SET status = 'online' WHERE id = $1 AND status::text = 'on_trip'`, [t.driverId]);
+        this.tracking.broadcastTripStatus({ tripId: t.id, status: 'searching_driver' });
+      }
+
+      // 2) Activacao: reservas a ACTIVATE_MIN da hora (inclui as que acabaram de ficar sem motorista).
+      const due: Array<{ id: string; passengerId: string }> = await m.query(
+        `SELECT id, "passengerId" FROM trips
+         WHERE "scheduledFor" IS NOT NULL
+           AND status::text = 'searching_driver'
+           AND "scheduledFor" <= now() + make_interval(mins => $1::int)
+           AND "scheduledFor" > now() - interval '2 hours'`,
+        [ACTIVATE_MIN],
+      );
+      for (const t of due) {
+        try {
+          const claim: Array<{ driverId: string }> = await m.query(`SELECT "driverId" FROM trip_reservation_claims WHERE "tripId" = $1`, [t.id]).catch(() => []);
+          const claimed = claim[0]?.driverId;
+          const assigned: any = claimed
+            ? await this.assignDriver(t.id, t.passengerId, claimed)
+            : await this.assignDriver(t.id, t.passengerId);
+          if (claimed) {
+            await m.query(`DELETE FROM trip_reservation_claims WHERE "tripId" = $1`, [t.id]);
+            if (assigned?.driver?.id !== claimed) {
+              // regra B: quem reservou e nao estava disponivel a hora perde prioridade
+              await m.query(
+                `INSERT INTO driver_penalties ("driverId", "tripId", reason, "expiresAt")
+                 VALUES ($1, $2, 'reservation_unavailable', now() + make_interval(days => $3::int))`,
+                [claimed, t.id, PENALTY_DAYS],
+              );
+            }
+          }
+        } catch {
+          // sem motorista disponivel por agora: tenta no ciclo seguinte
+        }
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[Reservas] erro no ciclo:', (e as Error).message);
+    } finally {
+      this.sweeping = false;
+    }
+  }
+
+  // ---------- Reservas: o motorista reserva com antecedencia ----------
+  // Reservar NAO atribui nem poe o motorista on_trip. A atribuicao real faz-se perto da hora,
+  // no sweepReservations, com preferencia para quem reservou.
+  private claimsReady?: Promise<unknown>;
+
+  private ensureClaims(): Promise<unknown> {
+    if (!this.claimsReady) {
+      this.claimsReady = this.tripsRepository.manager
+        .query(`CREATE TABLE IF NOT EXISTS trip_reservation_claims (
+           "tripId" uuid PRIMARY KEY,
+           "driverId" uuid NOT NULL,
+           "createdAt" timestamptz NOT NULL DEFAULT now()
+         )`)
+        .catch((e) => { this.claimsReady = undefined; throw e; });
+    }
+    return this.claimsReady;
+  }
+
+  /** Reservas abertas (sem motorista) e as que este motorista ja reservou. Destino so como zona. */
+  async driverScheduled(driverId: string) {
+    await this.ensureClaims();
+    const rows: any[] = await this.tripsRepository.manager.query(
+      `SELECT t.id, t."scheduledFor", t.origin, t.destination, t."priceKz", t."distanceKm", t."zoneIncentiveKz",
+              (c."driverId" IS NOT NULL) AS mine
+         FROM trips t
+         LEFT JOIN trip_reservation_claims c ON c."tripId" = t.id
+        WHERE t."scheduledFor" IS NOT NULL
+          AND t."scheduledFor" > now()
+          AND t.status::text = 'searching_driver'
+          AND (c."driverId" IS NULL OR c."driverId" = $1)
+        ORDER BY t."scheduledFor" ASC
+        LIMIT 50`,
+      [driverId],
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      dateIso: new Date(r.scheduledFor).toISOString(),
+      originLabel: r.origin?.label || r.origin?.address || '-',
+      destinationLabel: findZone(r.destination.latitude, r.destination.longitude).name,
+      estimatedEarningsKz: r.priceKz,
+      zoneIncentiveKz: r.zoneIncentiveKz ?? 0,
+      distanceKm: Number(r.distanceKm),
+      isAccepted: r.mine === true,
+    }));
+  }
+
+  async driverReserve(tripId: string, driverId: string): Promise<{ ok: boolean }> {
+    await this.ensureClaims();
+    const m = this.tripsRepository.manager;
+    const trip = await this.findByIdOrFail(tripId);
+    if (!trip.scheduledFor || trip.status !== TripStatus.SEARCHING_DRIVER || trip.driver) {
+      throw new BadRequestException('Esta reserva ja nao esta disponivel.');
+    }
+    const when = new Date(trip.scheduledFor).getTime();
+    if (when <= Date.now()) throw new BadRequestException('Esta reserva ja passou da hora marcada.');
+    if (!(await this.driverDocs.areAllApproved(driverId))) throw new BadRequestException('Precisas dos documentos aprovados para reservar.');
+    if (!(await vehicleApproved(m, driverId))) throw new BadRequestException('Precisas de um veiculo aprovado para reservar.');
+    if (!(await this.driverWallet.canOperate(driverId, this.driverCommissionKz(trip.priceKz)))) {
+      throw new BadRequestException('Saldo insuficiente para a comissao desta reserva.');
+    }
+    const clash = await m.query(
+      `SELECT 1 FROM trip_reservation_claims c JOIN trips t ON t.id = c."tripId"
+        WHERE c."driverId" = $1
+          AND t."scheduledFor" BETWEEN $2::timestamptz - interval '60 minutes' AND $2::timestamptz + interval '60 minutes'
+        LIMIT 1`,
+      [driverId, new Date(when).toISOString()],
+    );
+    if (clash.length) throw new BadRequestException('Ja tens uma reserva a menos de 1 hora desta.');
+    const res = await m.query(
+      `INSERT INTO trip_reservation_claims ("tripId", "driverId") VALUES ($1, $2)
+       ON CONFLICT ("tripId") DO NOTHING RETURNING "tripId"`,
+      [tripId, driverId],
+    );
+    if (!res.length) throw new BadRequestException('Outro motorista reservou primeiro.');
+    return { ok: true };
+  }
+
+  async driverUnreserve(tripId: string, driverId: string): Promise<{ ok: boolean }> {
+    await this.ensureClaims();
+    const m = this.tripsRepository.manager;
+    const rows: any[] = await m.query(
+      `SELECT t."scheduledFor" FROM trip_reservation_claims c JOIN trips t ON t.id = c."tripId"
+        WHERE c."tripId" = $1 AND c."driverId" = $2`,
+      [tripId, driverId],
+    );
+    if (!rows.length) throw new BadRequestException('Nao tens esta reserva.');
+    if (new Date(rows[0].scheduledFor).getTime() - Date.now() < 60 * 60 * 1000) {
+      throw new BadRequestException('So podes desistir ate 1 hora antes da hora marcada.');
+    }
+    await m.query(`DELETE FROM trip_reservation_claims WHERE "tripId" = $1 AND "driverId" = $2`, [tripId, driverId]);
+    return { ok: true };
   }
 
   private async releaseDriver(trip: Trip): Promise<void> {
@@ -402,11 +645,12 @@ export class TripsService implements OnModuleInit {
       .setParameters({ lat: latitude, lng: longitude, status: DriverStatus.ONLINE })
       .getRawAndEntities();
 
+    const penalized = await this.penalizedDriverIds();
     const nextPool = rows.entities
       .map((driver, i) => ({ driver, distanceKm: Number(rows.raw[i].dist) / 1000 }))
       .filter((c) => c.distanceKm <= MAX_MATCH_RADIUS_KM && !declined.has(c.driver.id))
       .sort((a, b) => {
-        const score = (c: { driver: Driver }) => (trip.womenMode && c.driver.gender === 'female' ? 4 : 0);
+        const score = (c: { driver: Driver }) => (penalized.has(c.driver.id) ? -3 : 0) + (trip.womenMode && c.driver.gender === 'female' ? 4 : 0);
         return score(b) - score(a) || a.distanceKm - b.distanceKm;
       });
 
@@ -426,7 +670,6 @@ export class TripsService implements OnModuleInit {
     await this.driversRepository.update(next.driver.id, { status: DriverStatus.ON_TRIP });
     this.tracking.notifyDriverAssigned(next.driver.id, this.buildAssignedPayload(trip, next.distanceKm));
     this.tracking.broadcastTripStatus({ tripId: trip.id, status: trip.status });
-    this.tracking.notifyDriverAssigned(next.driver.id, this.buildAssignedPayload(trip, next.distanceKm));
     return { reassigned: true };
   }
 

@@ -1,4 +1,4 @@
-﻿import { Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ProfileService } from './profile.service';
 
@@ -18,5 +18,9 @@ export class ProfileController {
     const p = await this.profileService.verifyIdentity(req.user.userId);
     return { isVerified: p.isVerified, angoPoints: p.angoPoints, verificationStatus: p.verificationStatus };
   }
-}
 
+  @Patch('push-token')
+  setPushToken(@Req() req: any, @Body('pushToken') pushToken: string) {
+    return this.profileService.setPushToken(req.user.userId, pushToken);
+  }
+}

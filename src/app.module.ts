@@ -15,6 +15,10 @@ import { VehiclesModule } from './modules/vehicles/vehicles.module';
 import { DriverAuthModule } from './modules/driver-auth/driver-auth.module';
 import { AdminAuthModule } from './modules/admin-auth/admin-auth.module';
 import { AdminOpsModule } from './modules/admin-ops/admin-ops.module';
+import { DriverProfileModule } from './modules/driver-profile/driver-profile.module';
+import { IdentityDocumentsModule } from './modules/identity-documents/identity-documents.module';
+import { ChatModule } from './modules/chat/chat.module';
+import { DriverExtrasModule } from './modules/driver-extras/driver-extras.module';
 import { CommissionPlansModule } from './modules/commission-plans/commission-plans.module';
 import { DriverSafetyModule } from './modules/driver-safety/driver-safety.module';
 import { VehicleInspectionsModule } from './modules/vehicle-inspections/vehicle-inspections.module';
@@ -44,6 +48,10 @@ import { MonthlyModule } from './modules/monthly/monthly.module';
     DriverAuthModule,
     AdminAuthModule,
     AdminOpsModule,
+    DriverProfileModule,
+    IdentityDocumentsModule,
+    ChatModule,
+    DriverExtrasModule,
     CommissionPlansModule,
     DriverSafetyModule,
     VehicleInspectionsModule,
